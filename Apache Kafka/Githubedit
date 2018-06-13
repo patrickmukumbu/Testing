@@ -1,0 +1,378 @@
+# DSpace Deployment in AWS
+
+This repository contains steps & instructions to install DSpace on Ubuntu servers. This guide will show you how to:
+* Setup the entire infrastructure using CloudFormation
+* Install and configure DSpace, Apache and Tomcat
+* Migrate DSpace accounts from one server to another
+* Backup EFS
+
+Step 1
+------------------
+### CloudFormation (CF)
+#### 1. pre-requisites before launching the cloudformation stack;
+- An s3 bucket for EFS backup
+- Existing and accessible Keypair in the region you are launching the stack
+- IAM permissions to launch resources in the aws (Ec2, s3, R53, Lambda, VPC, RDB, Cloudwatch)
+
+
+#### 2. Launching the stack
+
+First, let's go through the stack creation sections:
+
+#### a) Select Template
+
+Upload a template to Amazon S3 or Specify an Amazon S3 template URL
+
+#### b) Specify Details
+
+Stack Name: Give your stack a name
+
+##### Parameters
+###### i) Dspace Accounts Configuration
+The values entered in this section determine the number of instances that are going to be launched by the template at the initial set up.
+
+ 1. No. of Customer: Enter the initial number of customers or initial number of Accounts
+ 2. No. of DSpace accounts per server: Enter the required number of dspace accounts per instance
+
+###### ii) EC2 Configuration
+
+In the fields, enter or choose the following as required:
+
+1. Instance type
+2. The IAM role 
+
+###### iii) Security Configuration
+1. Select an existing key pair
+2. Provide the IP Address range to SSH from
+
+###### iv) Database Configuration
+
+In the fields, enter or choose from the dropdown as required. The Aurora Postgres RDS will have the specified parameters.
+
+##### Other Parameters
+
+###### i) DspaceHostedZone 
+Choose an existing hosted zone in Route 53
+
+###### ii) OperatorEMail
+Provide the email address to notify if there are any scaling operations
+
+#### c) Options
+
+1. Provide Key and Value
+2. Choose a role (optional)
+3. Setup Rollback Triggers
+4. You can also provide additional options for your stack
+
+#### d) Review
+
+Confirm that you have provided the desired details and then click 'create'
+
+Now that we have gone through every section, we can now proceed to the AWS console.
+##### Click Launch Stack
+The stack  is created in eu-west-1. However, this can be changed to any region that supports all the services/resources created by the stack. For instance, EFS is not available in all regions. Please refer to https://aws.amazon.com/about-aws/global-infrastructure/regional-product-services/ for details of Amazon EFS service availability by region.
+
+
+[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=eu-west-1#/stacks/new?stackName=dspacesample&templateURL=https://s3-eu-west-1.amazonaws.com/puppet-serverless/NestedStacks2/dspace_project_staging_cloudformation.template)
+
+This AWS CloudFormation templates create a full infrastructure for DspaceDirect application deployment, the following is a detailed explanation of waht happens when the stack is launched:
+
+This AWS CloudFormation template creates the full Dspace infrastracture which includes the following:
+
+  - a dedicated [Amazon Virtual Private Cloud](https://aws.amazon.com/vpc) (VPC) for the stack components, with 3 public subnets;
+  - One Internet Gateway;
+  - a Route Table;
+  - 6 Mount Targets;
+  - An Elastic File System.
+  - 10 Auto Scaling Groups each with 3 Launch Configurations but not all are created depending on user input in accounts configuration above
+  - One Application Load Balancer
+  - 3 Security Groups
+  - Route 53 Record Sets
+  - Aurora Postgres RDS
+  - Instance type t2.xlarge
+  - Db class r4.large for the aurora database
+  - 6 Target Groups
+  - Two Lambda Functions for the computation on user input in Dspace accounts configurations
+  
+##### General Architecture 
+![alt text](https://github.com/dspaceproject/DSpace-Deployment-in-AWS/blob/master/files/architecture.png)
+
+Step 2
+------------------
+### DSpace Setup With Puppet
+#### 1. Components of a DSpace Server Launched using CF above
+The cloud-init.yaml initialises a server with the following:
+#### Packages
+ - wget
+ - nfs-common
+ - jq #json parser
+ - git
+ - ruby       # Needed for librarian-puppet
+ - puppet
+ - python-pip # Used to install AWS CLI
+ - postgresql
+ - postgresql-client
+ - unzip
+ - libwww-perl 
+ - libdatetime-perl
+ - awscli
+ - librarian-puppet --version 2.2.3
+ 
+ #### Crons
+ - Creates cron jobs for syncronising our repos and sending Memory metrics to AWS CloudWatch
+ - installs and configures perl sript to monitor Memory using AWS CloudWatch
+
+#### Moreover
+ - Mounts EFS
+ - clones this repo in /etc/puppet
+ 
+#### 2. Configuration Options
+##### Single DSpace Account setup
+We can install and setup a single DSpace account, tomcat and apache with a single vhost. 
+
+##### Steps
+* Open hieradata - this is where you store the DSpace configuration files in hiera
+* Create or edit an existing file and have it as follows:
+
+```
+DSpaceDirect_Sites: 
+  dspace.dddke.net: 
+   site_name: "dspace.dddke.net"
+   
+   owner: "dspace.dddke.net"
+   username: "dspace" 
+   catalina_home: "/opt"
+   catalina_base: "/opt"
+   
+   tomcat_shutdown_port: "8005"
+   tomcat_port: "8080"
+   tomcat_ajp_port: "8009"
+   
+   git_branch: "dspace-5_x"
+   
+   db_name: "dspaces5x1"
+   db_user: "dspace" 
+   db_passwd: "Dspace123"
+   db_port: "5432"
+   port:    "8080"
+   
+   admin_firstname:      "DSpace"
+   admin_lastname:       "1"
+   admin_email:          "dspace.project@digitaldividedata.com"
+   admin_passwd:         "1234"
+   admin_language:       "en"
+   source_url: "http://www-eu.apache.org/dist/tomcat/tomcat-8/v8.5.29/bin/apache-tomcat-8.5.29.tar.gz"
+```
+
+
+##### Multiple DSpace Accounts setup
+
+We can also install and setup multiple DSpace accounts, tomcat instances and apache with multiple vhosts.
+
+##### Steps
+* Open hieradata - this is where you store the DSpace configuration files in hiera
+* Create or edit an existing file and have it as follows:
+```
+DSpaceDirect_Sites: 
+  dspace.dddke.net: 
+   site_name: "dspace.dddke.net"
+   
+   owner: "dspace.dddke.net"
+   username: "dspace" 
+   catalina_home: "/opt"
+   catalina_base: "/opt"
+   
+   tomcat_shutdown_port: "8005"
+   tomcat_port: "8080"
+   tomcat_ajp_port: "8009"
+   
+   git_branch: "dspace-5_x"
+   
+   db_name: "dspaces5x1"
+   db_user: "dspace" 
+   db_passwd: "Dspace123"
+   db_port: "5432"
+   port:    "8080"
+   
+   admin_firstname:      "DSpace"
+   admin_lastname:       "1"
+   admin_email:          "dspace.project@digitaldividedata.com"
+   admin_passwd:         "1234"
+   admin_language:       "en"
+   source_url: "http://www-eu.apache.org/dist/tomcat/tomcat-8/v8.5.29/bin/apache-tomcat-8.5.29.tar.gz"
+
+#dspace 2nd#####################
+  dspace1.dddke.net:
+   site_name: "dspace1.dddke.net"
+
+   owner: "dspace1.dddke.net"
+   username: "dspace1"
+
+   catalina_home: "/opt"
+   catalina_base: "/opt"
+
+   tomcat_shutdown_port: "8105"
+   tomcat_port: "8081"
+   tomcat_ajp_port: "8109"
+
+   git_branch: "dspace-5_x"
+
+   db_name: "dspaces5x2"
+   db_user: "dspace"
+   db_passwd: "Dspace123"
+   db_port: "5432"
+   port:    "8081"
+  
+   admin_firstname:      "DSpace"
+   admin_lastname:       "2"
+   admin_email:          "dspace.project@digitaldividedata.com"
+   admin_passwd:         "1234"
+   admin_language:       "en"
+   source_url: "http://www-eu.apache.org/dist/tomcat/tomcat-8/v8.5.29/bin/apache-tomcat-8.5.29.tar.gz"
+```
+##### Hostname and fqdn
+The hostname and fqdn are set using CF. This is achieved by adding userdata on respective launch configurations.
+The userdata is located in https://github.com/dspaceproject/DSpace-Deployment-in-AWS/blob/master/scripts/hostname.sh.
+
+The userdata also stores our Aurora Postgres RDS endpoint as an environment variables (DBENDPOINT). 
+* Our initialisation script is then called by the following line in the script:
+
+#include https://raw.githubusercontent.com/dspaceproject/dspacedirect-pilot/master/cloud-init.yaml?token=AerL0jWhpLQ3bUpxp6sJiXos-C6mZq9jks5ar3v0wA%3D%3D
+
+* Then datadog to remotely monitor our servers:
+
+#include https://raw.githubusercontent.com/dspaceproject/dspacedirect-pilot/master/scripts/datadog.sh?token=AerL0k7bsA14_WgzbQT5dEa6rZjGuz0bks5ar39QwA%3D%3D
+
+This is sample for dspaceserver1, the same is applied to the other sets, just edit the hostname and fqdn. This is vital because.
+
+#### 3. The Installation
+Login to the server you want to install DSpace
+##### Steps
+
+
+Run the following commands:
+
+1. ssh -i "keypair" username@Public DNS or Public IP
+2. sudo su
+Confirm that the hostname and fqdn were set corrrectly:
+3. facter -p | grep HOSTNAME 
+4. facter -p | grep fqdn
+5. FACTER_hostname=$HOSTNAME puppet apply /etc/puppet/manifests/site.pp
+
+#### 4. Post Installation
+
+1. Open AWS Route 53 Dashboard
+2. Create an A record pointing to the server IP or Aliases pointing to the Application Load Balancer DNS (one of the resources created by the CF stack).
+
+In this case, let's use dspace.dddke.net for a single installation, if multiple continue dspace1.dddke.net, dspace2.dddke.net, dspace3.dddke.net and so on
+
+Skip the next step if you are not using ELB to route traffic. Make sure the Route 53 records are the same as the sitenames of the accounts in hieradata in step 2 above
+
+3. Go to EC2 Dashboard and select Load Balancers, then your application load balancer. 
+4. Go to Listeners and create listener rules with host (sitename eg. dspace.dddke.net) pointing to the Alias record created above. Each rule should point to the correct target group (eg set1 - target group 1 and so on)
+6. Once this is done, open DSpace on your browser and login. The setup is complete.
+
+Depending on the configuration option test url(s) on a browser. You should be able to see the DSpace splash page.
+
+
+Step 3
+----------------
+#### DSpace Account Migration
+In order to migrate a DSpace account from one server to another, all you need to do is uninstall tomcat from the server you are migrating from. 
+
+Assuming that you want to migrate from server B to A and the DSpace accounts are installed on EFS we will do the following:
+1. Note down the dspace servers as server A and B
+2. uninstall tomcat for a DSpace account in server B
+3. Disable vhost site in /etc/apache2/site-enabled
+3. Update the hiera config file for server A adding the DSpace account of that in server B
+4. puppet apply to install the DSpace account on  server A
+5. Test the URL to ensure its wworking
+
+Login to server B and run the following commands:
+
+1. sudo su
+2. rm -rf /opt/{dspaceaccount} (eg. rm -rf /opt/dspace)
+3. a2dissite sitename (eg. a2dissite dspace.dddke.net
+
+We now need add the account migrated to the hiera config file of server A:
+
+4. vim /etc/puppet/hieradata/serverA.yaml} 
+5. FACTER_hostname=$HOSTNAME puppet apply /etc/puppet/manifests/site.pp
+6. Remap in Route 53 if needed
+7. Go to Listeners and edit listener rules for that host to point to the new target group
+7. Open the url on a browser
+
+
+Step 4
+----------------
+### EFS Backup
+
+#### 1. pre-requisites;
+- The first backup takes a longer time, hence all cron jobs and lambda executions will be done after first backup is complete
+- An s3 bucket for EFS backup
+- An IAM role which allows access to the bucket
+#### 2. Scripts and cron jobs;
+
+```Userdata script
+#!/bin/bash
+apt update
+apt install -y nfs-common
+apt install -y awscli
+mkdir -p /mnt/efs
+#Ensure the EFS endpoint is correct and enter it below e.g fs-2be76ae2.efs.eu-west-1.amazonaws.com and that the instance running this script is in the same Region and VPC as the EFS
+echo "fs-2be76ae2.efs.eu-west-1.amazonaws.com:/  /mnt/efs  nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 0 0" >> /etc/fstab
+mount -a -t nfs4
+touch /etc/cron.d/efsbackup-s3
+#The instance should be attached to a role that allows access to s3 bucket
+echo "40 02 * * ? * root aws s3 sync /mnt/efs/ s3://serverless-efs-backup/efs-backup" >> /etc/cron.d/efsbackup-s3
+```
+
+
+#### 3. CloudWatch Event;
+Refer to the following images to get an insight of how to set Cloudwatch Event rules that will trigger lambda function execution
+
+#### Starting an Ec2 Instance
+* Log in to AWS and go to the Cloudwatch console.
+* Under Events, Select Rules on the left hand pane.
+* Create new rule
+* Under Event Source, choose Schedule and in the provided form choose cron expression.
+  In this case we use ```30 02 * * ? *```. This starts the instance every day at 02:30 AM, ten minutes before backup process
+* On the right side, select Target as the our Lambda function for starting an instance as found in section 4 below.
+* On the lower right corner choose ```Configure Details``` to go to the next page
+* Under Rule Definitions, provide the Name of the Event Rule and the description. Make sure to check the State.
+* Click Create and you are good to go
+
+![alt text](https://github.com/dspaceproject/DSpace-Deployment-in-AWS/blob/master/files/CloudwatchEventRuletoStartEc2.png)
+
+
+### Stopping the Instance
+
+- Follow the steps described Starting and Ec2 Instance above, but make sure you choose the second lambda function for stopping instances and change the cron expression to ```30 05 * * ? *``` which will stop the instance after the backup, 3 hours since the instance was started
+
+![alt text](https://github.com/dspaceproject/DSpace-Deployment-in-AWS/blob/master/files/CWEventRuleStopEC2.png)
+
+#### 4. Lambda Functions;
+* Lambda function to start an instance based on tags filters (Instance state and name).
+In this case we used state ```running``` and the name ```dspace_project_staging_efs_backup_instance```
+Please refer to this link https://github.com/dspaceproject/DSpace-Deployment-in-AWS/blob/master/scripts/EC2InstanceStart.py
+
+* Lambda Function to Stop instance after the backup. This function stops the instance after the backup period (window) is over. This is the link for the lambda function
+https://github.com/dspaceproject/DSpace-Deployment-in-AWS/blob/master/scripts/EC2InstanceStop.py
+
+##### Now follow the following steps to setup EFS Backup:
+
+### i) Initial Backup Process
+
+* Log in to AWS EC2 console and launch an instance, of type let's say t2.micro and make sure to select our VPC created by cloudformation template above which is ```dspace_project_staging_VPC```. In this case we used an Ubuntu instance but the backup can be done using any other linux distro.
+* Select one of the subnets where our EFS is mounted
+* In the advanced section under user data write ```#include https://raw.githubusercontent.com/dspaceproject/DSpace-Deployment-in-AWS/master/scripts/backupEC2instancescript.sh?token=AerL0qGnugqAy3eC9ckmfMFJoQr4oasgks5as6FtwA%3D%3D```. This will call and run our backup userdata script above and make sure the EFS endpoint on the script matches the endpoint for our EFS.
+* Attach an available keypair which will enable access to the instance
+* After everything is set up log in to the instance 
+* Confirm the EFS is mounted by running the command ```df -h``` which should produce an output with a line of format ```a```
+* Run the command aws s3 sync /mnt/efs/ s3://serverless-efs-backup/efs-backup. This may take upto a day and half for 1TB of data or less depending on the amount of data in EFS at initial backup.
+
+### ii) Subsequent Backups
+
+Connect to the backup instance via ssh and on the run the command the following command as root ```echo "40 02 * * ? * root aws s3 sync /mnt/efs/ s3://serverless-efs-backup/efs-backup" >> /etc/cron.d/efsbackup-s3```. This will write a cron job for running EFS backup which will be run everyday at 02:40 AM.
+* If Cloudwatch Event rules above do not exist, create them. The events will help automate the backup by starting and stopping the instance
+* After this step you won't be required to login to the instance again because now the process will be automatic
